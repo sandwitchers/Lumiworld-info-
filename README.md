@@ -2,7 +2,12 @@
 
 A Lumiverse **Spindle** extension that shows which World Info (lorebook) entries were
 activated for each generation: a live entry list, a draggable book widget with an
-activation-count badge, and a keyword trigger report with recursion-pass forensics.
+activation-count badge, click-to-read entry contents, and a keyword trigger report
+with recursion-pass forensics.
+
+> **v1.1.0** — fixed the cut-off widget icon/badge on mobile (the host float box
+> clips overflowing chrome, so the widget is now chromeless with a fully inset
+> badge) and added the **click an entry → read its content** QOL feature.
 
 This is a native Lumiverse port of the SillyTavern extension
 **[WorldInfo Info](https://github.com/aikohanasaki/SillyTavern-WorldInfoInfo)**
@@ -14,6 +19,12 @@ Licensed under **AGPL-3.0** (see [LICENSE](./LICENSE)).
 - **Drawer tab "WI Info"** — lists every World Info entry the last generation
   activated, grouped by book or in activation order, with origin dots
   (constant / keyword / vector / sticky), matched keys, token estimates, and scores.
+- **Click an entry → read its content** — tapping any entry (in the tab or in the
+  *Triggered* list) opens a detail modal with the entry's full text, plus its
+  book, keys, origin, and activation metadata. Content is fetched on demand from
+  the host's world-book API (free tier) — the activation event itself stays
+  content-free. Includes a *Copy content* button. Entries from hidden books stay
+  masked for non-privileged roles.
 - **Floating book icon** — a small draggable widget with a live activation-count
   badge; click it to jump to the tab. Its position persists across reloads, and
   the tab's *Reset icon* button (or the `wi-position-reset` command) restores the
@@ -60,9 +71,10 @@ bun run build
 | `ui_panels` | Creates the floating book widget (`ctx.ui.createFloatWidget`). Gated tier — Lumiverse asks for an explicit grant on enable. |
 
 No other permission is used: events, settings, the drawer tab, backend commands,
-chat variables, and the user-role check are all free tier. The extension never
-reads entry *content* (the host never sends it), never writes to chats, and never
-calls the LLM.
+chat variables, the user-role check, and the world-book content lookup are all
+free tier. Entry *content* is read only when you click an entry, through the
+host's world-book REST API. The extension never writes to chats and never calls
+the LLM.
 
 ## Configuration surface
 
@@ -85,10 +97,11 @@ you need to report an issue.
 
 ## Known limitations (differences from the SillyTavern original)
 
-- **Entry content is never displayed.** Lumiverse's activation event ships a
-  content-free projection (ids, keys, provenance, stats) — by design. The
-  SillyTavern fork's hover tooltip with the full entry text therefore shows keys
-  and activation metadata instead.
+- **Entry content is click-to-read, not hover.** The activation event ships a
+  content-free projection (ids, keys, provenance, stats) — by design. Instead of
+  the original's hover tooltip with full text, this port opens a detail modal
+  with the entry content fetched from the world-book API. If a book was deleted
+  or renamed since the activation, the modal explains that instead of failing.
 - **No message-history interleaving / Author's Note row.** The original
   interleaves chat messages between depth-ordered entries using SillyTavern's
   prompt layout; Lumiverse's activation event carries no comparable depth
@@ -110,6 +123,12 @@ you need to report an issue.
 - **No book icon?** The `ui_panels` permission was not granted — re-enable the
   extension and accept the prompt, or use `ctx.permissions.request` by clicking
   any feature and re-enabling. The drawer tab works without it.
+- **Icon/badge looks cut off?** Update to v1.1.0 — the widget now renders
+  chromeless with an inset badge, so nothing overflows the host float box. Use
+  the tab's *Reset icon* button if a stale saved position bothers you.
+- **"Entry no longer exists" in the content modal?** The entry was edited or
+  removed after that generation ran — the activation list is a historical
+  snapshot, content always comes from the live world book.
 - **Empty panel after a generation?** Check the browser console for
   `[lumiworld_info]` errors and the server log for `[Spindle:lumiworld_info]`.
   The host emits the activation event only when a generation completes.

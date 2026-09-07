@@ -16,6 +16,8 @@ export interface ActivationEntry {
   title: string;
   /** Book display name, or "(no book)". */
   book: string;
+  /** Host world-book id when known (used to fetch the entry's content). */
+  bookId?: string;
   /** Configured primary key patterns. */
   keys: string[];
   /** activationProvenance.origin, or a fallback derived from activationType/source. */

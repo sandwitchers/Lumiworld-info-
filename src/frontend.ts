@@ -13,16 +13,20 @@
  */
 import type { SpindleFrontendContext } from "lumiverse-spindle-types";
 
-import type { ActivationSnapshot, BackendToFrontend, FrontendToBackend } from "./shared/types";
+import type { ActivationEntry, ActivationSnapshot, BackendToFrontend, FrontendToBackend } from "./shared/types";
 import { boundEntries } from "./shared/types";
 import { normalizePayload } from "./normalize";
-import type { UserRole } from "./normalize";
+import { isHiddenBook, parseHiddenPatterns, type UserRole } from "./normalize";
 import {
   PANEL_CSS,
   createPanel,
+  el,
   mountWidgetButton,
   setWidgetCount,
   buildReportContent,
+  buildEntryDetail,
+  appendCopyButton,
+  type EntryContentResult,
   type PanelSettings,
 } from "./panel";
 
@@ -97,7 +101,7 @@ export async function setup(ctx: SpindleFrontendContext): Promise<() => void> {
   let latestSnapshot: ActivationSnapshot | null = null;
   let history: ActivationSnapshot[] = [];
   let role: UserRole = "unknown";
-  let widgetRefs: { badge: HTMLElement } | null = null;
+  let widgetRefs: { badge: HTMLElement; button: HTMLElement } | null = null;
   let widgetHandle: {
     moveTo(x: number, y: number): void;
     getPosition(): WidgetPosition;
@@ -205,6 +209,7 @@ export async function setup(ctx: SpindleFrontendContext): Promise<() => void> {
       onReport: () => void openReport(),
       onTriggered: () => openTriggered(),
       onResetPosition: () => void resetWidgetPosition(),
+      onEntryClick: (entry) => void openEntryModal(entry),
     },
   );
   disposers.push(() => tab.destroy());
@@ -287,10 +292,14 @@ export async function setup(ctx: SpindleFrontendContext): Promise<() => void> {
         height: 46,
         initialPosition: restoreWidgetPosition(),
         snapToEdge: true,
+        // The extension owns the visuals: the host strips its own
+        // border/background/shadow AND its overflow clipping, so our button
+        // and badge render exactly as designed (fixes the cut-off icon).
+        chromeless: true,
         tooltip: "Active World Info",
       });
       widgetRefs = mountWidgetButton(doc, handle.root);
-      widgetRefs.badge.parentElement?.addEventListener("click", () => {
+      widgetRefs.button.addEventListener("click", () => {
         tab.activate();
       });
       const offDrag = handle.onDragEnd?.((position: WidgetPosition) => {
@@ -448,6 +457,94 @@ export async function setup(ctx: SpindleFrontendContext): Promise<() => void> {
     }
   };
 
+  // ── Entry content lookup (QOL: click an entry → view its content) ─────────
+  // The WORLD_INFO_ACTIVATED payload is content-free by host design; the
+  // worldBooks REST API (free tier) is the source of truth for content.
+  const CONTENT_INDEX_TTL_MS = 60_000;
+  const CONTENT_BOOK_LIMIT = 200;
+  const CONTENT_ENTRY_LIMIT = 1000;
+  let contentIndex: Map<string, { content: string }> | null = null;
+  let contentIndexAt = 0;
+
+  const cachedIndex = (): Map<string, { content: string }> | null =>
+    contentIndex && Date.now() - contentIndexAt < CONTENT_INDEX_TTL_MS ? contentIndex : null;
+
+  const buildContentIndex = async (): Promise<Map<string, { content: string }> | null> => {
+    const api = ctx.worldBooks;
+    if (!api) return null;
+    try {
+      const books = (await api.list({ limit: CONTENT_BOOK_LIMIT })).data;
+      const index = new Map<string, { content: string }>();
+      for (const book of books) {
+        try {
+          const { data: entries } = await api.entries.list(book.id, { limit: CONTENT_ENTRY_LIMIT });
+          for (const entry of entries) {
+            const record = { content: entry.content };
+            index.set(entry.id, record);
+            if (entry.uid && entry.uid !== entry.id) index.set(entry.uid, record);
+          }
+        } catch (error) {
+          console.warn(`${logPrefix} entries.list(${book.id}) failed:`, error);
+        }
+      }
+      contentIndex = index;
+      contentIndexAt = Date.now();
+      return index;
+    } catch (error) {
+      console.warn(`${logPrefix} worldBooks.list failed:`, error);
+      return null;
+    }
+  };
+
+  const lookupEntryContent = async (entry: ActivationEntry): Promise<EntryContentResult> => {
+    if (isHiddenBook(entry.book, parseHiddenPatterns(settings.hidden), role)) {
+      return { state: "hidden" };
+    }
+    const api = ctx.worldBooks;
+    if (!api || typeof api.entries?.list !== "function") return { state: "unavailable" };
+
+    // Fast path: the activation event tells us which book the entry lives in.
+    if (entry.bookId) {
+      try {
+        const { data } = await api.entries.list(entry.bookId, { limit: CONTENT_ENTRY_LIMIT });
+        const hit = data.find((candidate) => candidate.id === entry.id || candidate.uid === entry.id);
+        if (hit) return { state: "ready", content: hit.content };
+      } catch (error) {
+        console.warn(`${logPrefix} entries.list(${entry.bookId}) failed:`, error);
+      }
+    }
+    // Slow path: scan every book through a short-lived cached index —
+    // covers hosts that omit bookId on the activation payload.
+    const index = cachedIndex() ?? (await buildContentIndex());
+    const record = index?.get(entry.id);
+    if (record) return { state: "ready", content: record.content };
+    // One forced refresh before giving up (the book may have just been added).
+    const refreshed = await buildContentIndex();
+    const retry = refreshed?.get(entry.id);
+    return retry ? { state: "ready", content: retry.content } : { state: "missing" };
+  };
+
+  const openEntryModal = async (entry: ActivationEntry): Promise<void> => {
+    if (openModals >= 2) return; // Host caps extensions at 2 stacked modals.
+    try {
+      const title = entry.title.length > 48 ? `${entry.title.slice(0, 47)}…` : entry.title;
+      const modal = ctx.ui.showModal({ title, width: 560, maxHeight: 620 });
+      trackModal(modal);
+      modal.root.appendChild(buildEntryDetail(doc, entry, { state: "loading" }));
+      const result = await lookupEntryContent(entry);
+      modal.root.replaceChildren(buildEntryDetail(doc, entry, result));
+      if (result.state === "ready") {
+        const footer = doc.createElement("div");
+        footer.setAttribute("data-lwi-root", "");
+        footer.className = "lwi-detail-actions";
+        appendCopyButton(doc, footer, () => result.content);
+        modal.root.appendChild(footer);
+      }
+    } catch (error) {
+      console.warn(`${logPrefix} entry modal unavailable:`, error);
+    }
+  };
+
   const openTriggered = (): void => {
     void (async () => {
       if (openModals >= 2) return;
@@ -461,10 +558,15 @@ export async function setup(ctx: SpindleFrontendContext): Promise<() => void> {
         if (entries.length === 0) {
           content.textContent = "No active entries — run a generation first, nyaa~";
         } else {
+          content.append(
+            el(doc, "div", "lwi-report-summary", "Tap an entry to view its full content."),
+          );
           const list = doc.createElement("ul");
           for (const entry of entries) {
             const li = doc.createElement("li");
             li.textContent = `${entry.book}:${entry.id} — ${entry.title}`;
+            li.style.cursor = "pointer";
+            li.addEventListener("click", () => void openEntryModal(entry));
             list.append(li);
           }
           content.append(list);

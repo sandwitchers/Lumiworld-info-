@@ -61,6 +61,7 @@ function normalizeEntry(raw) {
     id,
     title,
     book,
+    bookId: str(record.bookId) ?? str(record.worldBookId),
     keys,
     origin,
     matchedPrimary,
@@ -117,7 +118,8 @@ function applyPrivacy(entries, patterns, role) {
 }
 
 // src/panel.ts
-var BOOK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z"/><path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z"/></svg>';
+var BOOK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z"/><path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z"/></svg>';
+var CHEVRON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>';
 var ORIGIN_LABEL = {
   constant: "constant",
   sticky: "sticky",
@@ -234,10 +236,29 @@ var PANEL_CSS = `
 }
 .lwi-entry {
   display: flex; align-items: flex-start; gap: 8px;
-  padding: 6px 8px; border-radius: var(--lwi-radius); cursor: default;
+  padding: 6px 8px; border-radius: var(--lwi-radius); cursor: pointer;
   transition: background var(--lwi-fast);
 }
 .lwi-entry:hover { background: var(--lwi-fill); }
+.lwi-entry:focus-visible { outline: 1px solid var(--lwi-accent); outline-offset: 1px; }
+.lwi-entry-chevron {
+  flex: none; margin-top: 3px; color: var(--lwi-text-dim);
+  transition: transform var(--lwi-fast);
+}
+.lwi-entry:hover .lwi-entry-chevron { color: var(--lwi-accent); }
+/* Entry detail modal */
+.lwi-detail-meta {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px;
+}
+.lwi-detail-content {
+  margin: 0; padding: 10px; border-radius: var(--lwi-radius);
+  border: 1px solid var(--lwi-border); background: var(--lwi-fill-subtle);
+  color: var(--lwi-text); font-size: calc(12.5px * var(--lumiverse-font-scale, 1));
+  line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 46vh; overflow-y: auto; user-select: text; cursor: auto;
+}
+.lwi-detail-notice { padding: 14px 6px; text-align: center; color: var(--lwi-text-muted); }
+.lwi-detail-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .lwi-dot { flex: none; width: 10px; height: 10px; border-radius: 999px; margin-top: 4px; }
 .lwi-dot--constant { background: #3b82f6; box-shadow: 0 0 6px rgba(59,130,246,0.7); }
 .lwi-dot--keyword { background: #22c55e; }
@@ -255,24 +276,40 @@ var PANEL_CSS = `
   display: flex; align-items: center; gap: 8px; padding: 6px 8px;
   color: var(--lwi-text-dim); font-style: italic;
 }
-/* Float widget */
+/* Float widget.
+   The host float container is exactly width x height and (in chromeless
+   mode) gives the extension full visual ownership. The root must fill the
+   host box 100% and the button must use border-box, otherwise the button
+   collapses to its content height inside the empty host box and the badge
+   gets clipped by the host's overflow boundaries. The badge therefore lives
+   INSIDE the button box - nothing may overflow the root. */
+[data-lwi-root].lwi-widget-host {
+  width: 100%; height: 100%;
+}
 .lwi-widget {
-  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  box-sizing: border-box; width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
   border-radius: var(--lwi-radius); border: 1px solid var(--lwi-border);
   background: var(--lumiverse-bg, rgba(20,24,28,0.92));
   color: var(--lwi-text); cursor: pointer; position: relative;
+  overflow: hidden;
   box-shadow: 0 4px 16px rgba(0,0,0,0.25);
   transition: border-color var(--lwi-fast), transform var(--lwi-fast);
 }
 .lwi-widget:hover { border-color: var(--lwi-accent); transform: translateY(-1px); }
 .lwi-widget[data-empty="true"] { opacity: 0.55; }
 .lwi-badge {
-  position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px;
-  padding: 0 4px; border-radius: 999px; background: var(--lwi-accent);
-  color: var(--lwi-accent-fg); font-size: calc(11px * var(--lumiverse-font-scale, 1));
-  font-weight: 700; display: flex; align-items: center; justify-content: center;
+  position: absolute; top: 2px; right: 2px; min-width: 14px; max-width: 30px;
+  height: 14px; padding: 0 4px; border-radius: 999px;
+  background: var(--lwi-accent); border: 1px solid rgba(0,0,0,0.25);
+  color: var(--lwi-accent-fg); font-size: calc(10px * var(--lumiverse-font-scale, 1));
+  font-weight: 700; line-height: 1; display: flex; align-items: center; justify-content: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none; box-sizing: border-box;
 }
 .lwi-badge[data-zero="true"] { display: none; }
+.lwi-widget-icon { display: block; margin-top: 6px; }
+.lwi-widget[data-has-badge="true"] .lwi-widget-icon { margin-top: 8px; }
 /* Report modal */
 .lwi-report { color: var(--lwi-text); font-size: calc(13px * var(--lumiverse-font-scale, 1)); }
 .lwi-report-summary { color: var(--lwi-text-muted); margin-bottom: 8px; }
@@ -306,6 +343,9 @@ function createPanel(doc, root, settings, callbacks) {
   };
   buildChip(chips.group, "Group by book", "Group activated entries by World Info book", "group");
   buildChip(chips.order, "Activation order", "Show entries in activation order instead of alphabetically", "order");
+  const hint = el(doc, "div", "lwi-status", "Tip: click any entry to read its full content, nyaa~");
+  hint.style.borderBottom = "none";
+  hint.style.paddingBottom = "0";
   const reportBtn = el(doc, "button", "lwi-btn lwi-btn--accent", "Report");
   reportBtn.type = "button";
   reportBtn.title = "Keyword trigger report (same as the wi-report command)";
@@ -321,7 +361,7 @@ function createPanel(doc, root, settings, callbacks) {
   toolbar.append(reportBtn, triggeredBtn, resetBtn);
   const status = el(doc, "div", "lwi-status", "Waiting for the first generation…");
   const list = el(doc, "div", "lwi-list");
-  root.append(toolbar, status, list);
+  root.append(toolbar, status, hint, list);
   let currentSnapshot = null;
   let currentRole = "unknown";
   let currentSettings = settings;
@@ -341,7 +381,11 @@ function createPanel(doc, root, settings, callbacks) {
   };
   const renderEntryRow = (entry) => {
     const row = el(doc, "div", "lwi-entry");
-    row.title = entryTooltip(entry);
+    row.title = `${entryTooltip(entry)}
+---
+Click: view this entry's content`;
+    row.setAttribute("role", "button");
+    row.setAttribute("tabindex", "0");
     row.append(el(doc, "span", `lwi-dot lwi-dot--${entry.origin}`));
     const title = el(doc, "div", "lwi-title", entry.title);
     const tags = el(doc, "span", "lwi-tags");
@@ -356,6 +400,17 @@ function createPanel(doc, root, settings, callbacks) {
     if (tags.childElementCount > 0)
       title.append(tags);
     row.append(title);
+    const chevron = el(doc, "span", "lwi-entry-chevron");
+    chevron.innerHTML = CHEVRON_SVG;
+    row.append(chevron);
+    const open = () => callbacks.onEntryClick(entry);
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        open();
+      }
+    });
     return row;
   };
   const renderList = () => {
@@ -406,22 +461,84 @@ function createPanel(doc, root, settings, callbacks) {
 }
 function mountWidgetButton(doc, root) {
   root.setAttribute("data-lwi-root", "");
+  root.classList.add("lwi-widget-host");
   const button = el(doc, "div", "lwi-widget");
   button.title = `Active World Info
 ---
 Click: open the World Info Info tab`;
-  button.innerHTML = BOOK_SVG;
+  const icon = el(doc, "span", "lwi-widget-icon");
+  icon.innerHTML = BOOK_SVG;
+  button.append(icon);
   const badge = el(doc, "span", "lwi-badge", "0");
   badge.dataset.zero = "true";
   button.append(badge);
   root.replaceChildren(button);
-  return { badge };
+  return { badge, button };
 }
 function setWidgetCount(refs, count) {
   if (!refs)
     return;
-  refs.badge.textContent = String(count);
+  refs.badge.textContent = count > 99 ? "99+" : String(count);
   refs.badge.dataset.zero = String(count === 0);
+  refs.badge.closest(".lwi-widget")?.setAttribute("data-has-badge", String(count > 0));
+}
+function detailChip(doc, label) {
+  return el(doc, "span", "lwi-tag", label);
+}
+function buildEntryDetail(doc, entry, result) {
+  const wrap = el(doc, "div", "lwi-detail");
+  wrap.setAttribute("data-lwi-root", "");
+  const meta = el(doc, "div", "lwi-detail-meta");
+  meta.append(detailChip(doc, `book: ${entry.book}`));
+  meta.append(detailChip(doc, ORIGIN_LABEL[entry.origin] ?? entry.origin));
+  if (entry.keys.length > 0)
+    meta.append(detailChip(doc, `keys: ${entry.keys.join(", ")}`));
+  const extras = [];
+  if (entry.pass >= 0)
+    extras.push(`pass ${entry.pass + 1}`);
+  if (entry.activationOrder !== undefined)
+    extras.push(`order ${entry.activationOrder}`);
+  if (entry.estimatedTokens !== undefined)
+    extras.push(`~${entry.estimatedTokens} tokens`);
+  if (entry.score !== undefined)
+    extras.push(`score ${entry.score.toFixed(3)}`);
+  if (extras.length > 0)
+    meta.append(detailChip(doc, extras.join(" • ")));
+  wrap.append(meta);
+  if (result.state === "loading") {
+    wrap.append(el(doc, "div", "lwi-detail-notice", "Loading entry content…"));
+  } else if (result.state === "hidden") {
+    wrap.append(el(doc, "div", "lwi-detail-notice", "This entry belongs to a hidden book — content is masked for your role."));
+  } else if (result.state === "missing") {
+    wrap.append(el(doc, "div", "lwi-detail-notice", "The entry no longer exists (it may have been edited or removed since this generation)."));
+  } else if (result.state === "unavailable") {
+    wrap.append(el(doc, "div", "lwi-detail-notice", "World book content is not available on this host (worldBooks API missing)."));
+  } else if (result.state === "error") {
+    wrap.append(el(doc, "div", "lwi-detail-notice", "Failed to load the entry content."));
+  } else {
+    const pre = el(doc, "pre", "lwi-detail-content", result.content);
+    wrap.append(pre);
+  }
+  return wrap;
+}
+function appendCopyButton(doc, footer, getText) {
+  const copy = el(doc, "button", "lwi-btn", "Copy content");
+  copy.type = "button";
+  const flash = (label) => {
+    copy.textContent = label;
+    window.setTimeout(() => {
+      copy.textContent = "Copy content";
+    }, 1500);
+  };
+  copy.addEventListener("click", () => {
+    const clipboard = navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== "function") {
+      flash("Copy unavailable");
+      return;
+    }
+    clipboard.writeText(getText()).then(() => flash("Copied!")).catch(() => flash("Copy failed"));
+  });
+  footer.append(copy);
 }
 function buildFrequency(snapshots, settings, role) {
   const patterns = parseHiddenPatterns(settings.hidden);
@@ -708,7 +825,8 @@ async function setup(ctx) {
     },
     onReport: () => void openReport(),
     onTriggered: () => openTriggered(),
-    onResetPosition: () => void resetWidgetPosition()
+    onResetPosition: () => void resetWidgetPosition(),
+    onEntryClick: (entry) => void openEntryModal(entry)
   });
   disposers.push(() => tab.destroy());
   const hiddenChip = doc.createElement("div");
@@ -780,10 +898,11 @@ async function setup(ctx) {
         height: 46,
         initialPosition: restoreWidgetPosition(),
         snapToEdge: true,
+        chromeless: true,
         tooltip: "Active World Info"
       });
       widgetRefs = mountWidgetButton(doc, handle.root);
-      widgetRefs.badge.parentElement?.addEventListener("click", () => {
+      widgetRefs.button.addEventListener("click", () => {
         tab.activate();
       });
       const offDrag = handle.onDragEnd?.((position) => {
@@ -903,6 +1022,86 @@ async function setup(ctx) {
       console.warn(`${logPrefix} report modal unavailable:`, error);
     }
   };
+  const CONTENT_INDEX_TTL_MS = 60000;
+  const CONTENT_BOOK_LIMIT = 200;
+  const CONTENT_ENTRY_LIMIT = 1000;
+  let contentIndex = null;
+  let contentIndexAt = 0;
+  const cachedIndex = () => contentIndex && Date.now() - contentIndexAt < CONTENT_INDEX_TTL_MS ? contentIndex : null;
+  const buildContentIndex = async () => {
+    const api = ctx.worldBooks;
+    if (!api)
+      return null;
+    try {
+      const books = (await api.list({ limit: CONTENT_BOOK_LIMIT })).data;
+      const index = new Map;
+      for (const book of books) {
+        try {
+          const { data: entries } = await api.entries.list(book.id, { limit: CONTENT_ENTRY_LIMIT });
+          for (const entry of entries) {
+            const record = { content: entry.content };
+            index.set(entry.id, record);
+            if (entry.uid && entry.uid !== entry.id)
+              index.set(entry.uid, record);
+          }
+        } catch (error) {
+          console.warn(`${logPrefix} entries.list(${book.id}) failed:`, error);
+        }
+      }
+      contentIndex = index;
+      contentIndexAt = Date.now();
+      return index;
+    } catch (error) {
+      console.warn(`${logPrefix} worldBooks.list failed:`, error);
+      return null;
+    }
+  };
+  const lookupEntryContent = async (entry) => {
+    if (isHiddenBook(entry.book, parseHiddenPatterns(settings.hidden), role)) {
+      return { state: "hidden" };
+    }
+    const api = ctx.worldBooks;
+    if (!api || typeof api.entries?.list !== "function")
+      return { state: "unavailable" };
+    if (entry.bookId) {
+      try {
+        const { data } = await api.entries.list(entry.bookId, { limit: CONTENT_ENTRY_LIMIT });
+        const hit = data.find((candidate) => candidate.id === entry.id || candidate.uid === entry.id);
+        if (hit)
+          return { state: "ready", content: hit.content };
+      } catch (error) {
+        console.warn(`${logPrefix} entries.list(${entry.bookId}) failed:`, error);
+      }
+    }
+    const index = cachedIndex() ?? await buildContentIndex();
+    const record = index?.get(entry.id);
+    if (record)
+      return { state: "ready", content: record.content };
+    const refreshed = await buildContentIndex();
+    const retry = refreshed?.get(entry.id);
+    return retry ? { state: "ready", content: retry.content } : { state: "missing" };
+  };
+  const openEntryModal = async (entry) => {
+    if (openModals >= 2)
+      return;
+    try {
+      const title = entry.title.length > 48 ? `${entry.title.slice(0, 47)}…` : entry.title;
+      const modal = ctx.ui.showModal({ title, width: 560, maxHeight: 620 });
+      trackModal(modal);
+      modal.root.appendChild(buildEntryDetail(doc, entry, { state: "loading" }));
+      const result = await lookupEntryContent(entry);
+      modal.root.replaceChildren(buildEntryDetail(doc, entry, result));
+      if (result.state === "ready") {
+        const footer = doc.createElement("div");
+        footer.setAttribute("data-lwi-root", "");
+        footer.className = "lwi-detail-actions";
+        appendCopyButton(doc, footer, () => result.content);
+        modal.root.appendChild(footer);
+      }
+    } catch (error) {
+      console.warn(`${logPrefix} entry modal unavailable:`, error);
+    }
+  };
   const openTriggered = () => {
     (async () => {
       if (openModals >= 2)
@@ -917,10 +1116,13 @@ async function setup(ctx) {
         if (entries.length === 0) {
           content.textContent = "No active entries — run a generation first, nyaa~";
         } else {
+          content.append(el(doc, "div", "lwi-report-summary", "Tap an entry to view its full content."));
           const list = doc.createElement("ul");
           for (const entry of entries) {
             const li = doc.createElement("li");
             li.textContent = `${entry.book}:${entry.id} — ${entry.title}`;
+            li.style.cursor = "pointer";
+            li.addEventListener("click", () => void openEntryModal(entry));
             list.append(li);
           }
           content.append(list);

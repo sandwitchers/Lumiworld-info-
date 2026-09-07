@@ -84,6 +84,7 @@ export function normalizeEntry(raw: unknown): ActivationEntry | null {
     id,
     title,
     book,
+    bookId: str(record.bookId) ?? str(record.worldBookId),
     keys,
     origin,
     matchedPrimary,
