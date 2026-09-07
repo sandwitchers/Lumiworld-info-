@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "name": "Lumiworld Info",
+  "identifier": "lumiworld_info",
+  "author": "sandwitchers",
+  "github": "https://github.com/sandwitchers/Lumiworld-info-",
+  "homepage": "https://github.com/sandwitchers/Lumiworld-info-",
+  "description": "World Info activation inspector: live active-entry list with badge, draggable book widget, keyword trigger report and recursion-pass forensics. A Lumiverse port of SillyTavern WorldInfoInfo.",
+  "permissions": ["ui_panels"],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js"
+}
