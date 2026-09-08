@@ -515,6 +515,8 @@ function buildEntryDetail(doc, entry, result) {
     wrap.append(el(doc, "div", "lwi-detail-notice", "World book content is not available on this host (worldBooks API missing)."));
   } else if (result.state === "error") {
     wrap.append(el(doc, "div", "lwi-detail-notice", "Failed to load the entry content."));
+  } else if (result.state === "ready" && result.content.length === 0) {
+    wrap.append(el(doc, "div", "lwi-detail-notice", "(This entry has no content.)"));
   } else {
     const pre = el(doc, "pre", "lwi-detail-content", result.content);
     wrap.append(pre);
@@ -1025,60 +1027,122 @@ async function setup(ctx) {
   const CONTENT_INDEX_TTL_MS = 60000;
   const CONTENT_BOOK_LIMIT = 200;
   const CONTENT_ENTRY_LIMIT = 1000;
+  const worldBooksApi = ctx.worldBooks;
+  const asRows = (value) => {
+    if (Array.isArray(value))
+      return value;
+    const record = asRecord(value);
+    if (record) {
+      if (Array.isArray(record.data))
+        return record.data;
+      if (Array.isArray(record.entries))
+        return record.entries;
+    }
+    return [];
+  };
+  const fieldString = (value) => typeof value === "string" && value.length > 0 ? value : undefined;
+  const listAllBooks = async () => {
+    if (!worldBooksApi || typeof worldBooksApi.list !== "function")
+      return [];
+    try {
+      return asRows(await worldBooksApi.list({}));
+    } catch (error) {
+      console.warn(`${logPrefix} worldBooks.list failed:`, error);
+      return [];
+    }
+  };
+  const listBookEntries = async (bookId) => {
+    if (!worldBooksApi)
+      return [];
+    try {
+      if (typeof worldBooksApi.entries === "function") {
+        return asRows(await worldBooksApi.entries(bookId));
+      }
+      const nested = worldBooksApi.entries;
+      if (nested && typeof nested.list === "function") {
+        return asRows(await nested.list(bookId, { limit: CONTENT_ENTRY_LIMIT }));
+      }
+    } catch (error) {
+      console.warn(`${logPrefix} worldBooks.entries(${bookId}) failed:`, error);
+    }
+    return [];
+  };
+  const contentApiAvailable = () => {
+    if (!worldBooksApi)
+      return false;
+    if (typeof worldBooksApi.entries === "function")
+      return true;
+    const nested = worldBooksApi.entries;
+    return nested !== undefined && nested !== null && typeof nested.list === "function";
+  };
+  const matchEntryRow = (rows, entryId) => {
+    for (const row of rows) {
+      const record = asRecord(row);
+      if (!record)
+        continue;
+      if (record.id === entryId || record.uid === entryId) {
+        return { content: typeof record.content === "string" ? record.content : "" };
+      }
+    }
+    return null;
+  };
   let contentIndex = null;
   let contentIndexAt = 0;
   const cachedIndex = () => contentIndex && Date.now() - contentIndexAt < CONTENT_INDEX_TTL_MS ? contentIndex : null;
   const buildContentIndex = async () => {
-    const api = ctx.worldBooks;
-    if (!api)
-      return null;
-    try {
-      const books = (await api.list({ limit: CONTENT_BOOK_LIMIT })).data;
-      const index = new Map;
-      for (const book of books) {
-        try {
-          const { data: entries } = await api.entries.list(book.id, { limit: CONTENT_ENTRY_LIMIT });
-          for (const entry of entries) {
-            const record = { content: entry.content };
-            index.set(entry.id, record);
-            if (entry.uid && entry.uid !== entry.id)
-              index.set(entry.uid, record);
-          }
-        } catch (error) {
-          console.warn(`${logPrefix} entries.list(${book.id}) failed:`, error);
+    const index = new Map;
+    const books = await listAllBooks();
+    let processedBooks = 0;
+    for (const book of books) {
+      if (processedBooks >= CONTENT_BOOK_LIMIT)
+        break;
+      const bookId = fieldString(asRecord(book)?.id);
+      if (!bookId)
+        continue;
+      processedBooks += 1;
+      const rows = await listBookEntries(bookId);
+      let counted = 0;
+      for (const row of rows) {
+        if (counted >= CONTENT_ENTRY_LIMIT)
+          break;
+        const record = asRecord(row);
+        if (!record)
+          continue;
+        const stored = {
+          content: typeof record.content === "string" ? record.content : ""
+        };
+        const id = fieldString(record.id);
+        if (id) {
+          if (!index.has(id))
+            counted += 1;
+          index.set(id, stored);
         }
+        const uid = fieldString(record.uid);
+        if (uid && uid !== id)
+          index.set(uid, stored);
       }
-      contentIndex = index;
-      contentIndexAt = Date.now();
-      return index;
-    } catch (error) {
-      console.warn(`${logPrefix} worldBooks.list failed:`, error);
-      return null;
     }
+    contentIndex = index;
+    contentIndexAt = Date.now();
+    return index;
   };
   const lookupEntryContent = async (entry) => {
     if (isHiddenBook(entry.book, parseHiddenPatterns(settings.hidden), role)) {
       return { state: "hidden" };
     }
-    const api = ctx.worldBooks;
-    if (!api || typeof api.entries?.list !== "function")
+    if (!contentApiAvailable())
       return { state: "unavailable" };
     if (entry.bookId) {
-      try {
-        const { data } = await api.entries.list(entry.bookId, { limit: CONTENT_ENTRY_LIMIT });
-        const hit = data.find((candidate) => candidate.id === entry.id || candidate.uid === entry.id);
-        if (hit)
-          return { state: "ready", content: hit.content };
-      } catch (error) {
-        console.warn(`${logPrefix} entries.list(${entry.bookId}) failed:`, error);
-      }
+      const hit = matchEntryRow(await listBookEntries(entry.bookId), entry.id);
+      if (hit)
+        return { state: "ready", content: hit.content };
     }
     const index = cachedIndex() ?? await buildContentIndex();
-    const record = index?.get(entry.id);
+    const record = index.get(entry.id);
     if (record)
       return { state: "ready", content: record.content };
     const refreshed = await buildContentIndex();
-    const retry = refreshed?.get(entry.id);
+    const retry = refreshed.get(entry.id);
     return retry ? { state: "ready", content: retry.content } : { state: "missing" };
   };
   const openEntryModal = async (entry) => {

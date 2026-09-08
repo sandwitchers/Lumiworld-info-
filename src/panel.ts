@@ -512,6 +512,8 @@ export function buildEntryDetail(
     );
   } else if (result.state === "error") {
     wrap.append(el(doc, "div", "lwi-detail-notice", "Failed to load the entry content."));
+  } else if (result.state === "ready" && result.content.length === 0) {
+    wrap.append(el(doc, "div", "lwi-detail-notice", "(This entry has no content.)"));
   } else {
     const pre = el(doc, "pre", "lwi-detail-content", result.content);
     wrap.append(pre);

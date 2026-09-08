@@ -1,6 +1,6 @@
 {
   "name": "lumiworld-info",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "private": true,
   "type": "module",
   "description": "Lumiverse Spindle port of SillyTavern WorldInfoInfo (AGPL-3.0).",
@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.14.0",
+    "happy-dom": "^20.14.0",
     "lumiverse-spindle-types": "^0.6.29",
     "typescript": "^7.0.2"
   }

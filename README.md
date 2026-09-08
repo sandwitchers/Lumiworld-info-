@@ -5,9 +5,12 @@ activated for each generation: a live entry list, a draggable book widget with a
 activation-count badge, click-to-read entry contents, and a keyword trigger report
 with recursion-pass forensics.
 
-> **v1.1.0** — fixed the cut-off widget icon/badge on mobile (the host float box
-> clips overflowing chrome, so the widget is now chromeless with a fully inset
-> badge) and added the **click an entry → read its content** QOL feature.
+> **v1.1.1** — fixed **entry content not loading** ("worldBooks API missing"):
+> Lumiverse 1.1.x serves `worldBooks.entries(bookId)` as a plain-array function
+> call, not the `entries.list(bookId)` object the previous build expected. The
+> lookup now speaks **both shapes** (and both list envelopes), verified by a
+> runtime simulation. Plus, from v1.1.0: fixed the cut-off widget icon/badge on
+> mobile and added the **click an entry → read its content** QOL feature.
 
 This is a native Lumiverse port of the SillyTavern extension
 **[WorldInfo Info](https://github.com/aikohanasaki/SillyTavern-WorldInfoInfo)**
@@ -24,7 +27,9 @@ Licensed under **AGPL-3.0** (see [LICENSE](./LICENSE)).
   book, keys, origin, and activation metadata. Content is fetched on demand from
   the host's world-book API (free tier) — the activation event itself stays
   content-free. Includes a *Copy content* button. Entries from hidden books stay
-  masked for non-privileged roles.
+  masked for non-privileged roles. The lookup is dual-shape: it works on hosts
+  exposing `worldBooks.entries(bookId)` (plain array) as well as hosts exposing
+  `worldBooks.entries.list(bookId)` (`{ data }` envelope).
 - **Floating book icon** — a small draggable widget with a live activation-count
   badge; click it to jump to the tab. Its position persists across reloads, and
   the tab's *Reset icon* button (or the `wi-position-reset` command) restores the
@@ -123,9 +128,13 @@ you need to report an issue.
 - **No book icon?** The `ui_panels` permission was not granted — re-enable the
   extension and accept the prompt, or use `ctx.permissions.request` by clicking
   any feature and re-enabling. The drawer tab works without it.
-- **Icon/badge looks cut off?** Update to v1.1.0 — the widget now renders
+- **Icon/badge looks cut off?** Update to v1.1.0+ — the widget now renders
   chromeless with an inset badge, so nothing overflows the host float box. Use
   the tab's *Reset icon* button if a stale saved position bothers you.
+- **"worldBooks API missing" in the content modal?** Update to v1.1.1+ — earlier
+  builds called a world-book API shape this host doesn't ship. The lookup now
+  supports both known shapes; if your host is older than both, the modal says so
+  explicitly.
 - **"Entry no longer exists" in the content modal?** The entry was edited or
   removed after that generation ran — the activation list is a historical
   snapshot, content always comes from the live world book.

@@ -16,7 +16,7 @@ import type { SpindleFrontendContext } from "lumiverse-spindle-types";
 import type { ActivationEntry, ActivationSnapshot, BackendToFrontend, FrontendToBackend } from "./shared/types";
 import { boundEntries } from "./shared/types";
 import { normalizePayload } from "./normalize";
-import { isHiddenBook, parseHiddenPatterns, type UserRole } from "./normalize";
+import { asRecord, isHiddenBook, parseHiddenPatterns, type UserRole } from "./normalize";
 import {
   PANEL_CSS,
   createPanel,
@@ -458,69 +458,150 @@ export async function setup(ctx: SpindleFrontendContext): Promise<() => void> {
   };
 
   // ── Entry content lookup (QOL: click an entry → view its content) ─────────
-  // The WORLD_INFO_ACTIVATED payload is content-free by host design; the
-  // worldBooks REST API (free tier) is the source of truth for content.
+  // The WORLD_INFO_ACTIVATED payload is content-free by host design; entry
+  // content comes from the worldBooks REST surface (free tier on the
+  // frontend authority map).
+  //
+  // Host shape drift: Lumiverse 1.1.x exposes on ctx.worldBooks
+  //   list()             -> Promise<WorldBook[]>       (plain array)
+  //   entries(bookId)    -> Promise<WorldBookEntry[]>  (plain array)
+  // while older typings describe
+  //   entries.list(bookId) -> Promise<{ data: [...] }>
+  // Both shapes are supported here so the panel works on either build.
   const CONTENT_INDEX_TTL_MS = 60_000;
   const CONTENT_BOOK_LIMIT = 200;
   const CONTENT_ENTRY_LIMIT = 1000;
-  let contentIndex: Map<string, { content: string }> | null = null;
-  let contentIndexAt = 0;
 
-  const cachedIndex = (): Map<string, { content: string }> | null =>
-    contentIndex && Date.now() - contentIndexAt < CONTENT_INDEX_TTL_MS ? contentIndex : null;
+  interface ContentRecord {
+    content: string;
+  }
 
-  const buildContentIndex = async (): Promise<Map<string, { content: string }> | null> => {
-    const api = ctx.worldBooks;
-    if (!api) return null;
+  type WorldBooksEntriesLike =
+    | ((bookId: string) => Promise<unknown>)
+    | { list?: (bookId: string, options?: { limit?: number }) => Promise<unknown> };
+  type WorldBooksApiLike = {
+    list?: (options?: { fields?: readonly string[] }) => Promise<unknown>;
+    entries?: WorldBooksEntriesLike;
+  };
+
+  const worldBooksApi = (ctx as unknown as { worldBooks?: WorldBooksApiLike }).worldBooks;
+
+  /** Normalize a REST result into a row array (plain array or `{ data }`/`{ entries }` envelope). */
+  const asRows = (value: unknown): unknown[] => {
+    if (Array.isArray(value)) return value;
+    const record = asRecord(value);
+    if (record) {
+      if (Array.isArray(record.data)) return record.data;
+      if (Array.isArray(record.entries)) return record.entries;
+    }
+    return [];
+  };
+
+  const fieldString = (value: unknown): string | undefined =>
+    typeof value === "string" && value.length > 0 ? value : undefined;
+
+  const listAllBooks = async (): Promise<unknown[]> => {
+    if (!worldBooksApi || typeof worldBooksApi.list !== "function") return [];
     try {
-      const books = (await api.list({ limit: CONTENT_BOOK_LIMIT })).data;
-      const index = new Map<string, { content: string }>();
-      for (const book of books) {
-        try {
-          const { data: entries } = await api.entries.list(book.id, { limit: CONTENT_ENTRY_LIMIT });
-          for (const entry of entries) {
-            const record = { content: entry.content };
-            index.set(entry.id, record);
-            if (entry.uid && entry.uid !== entry.id) index.set(entry.uid, record);
-          }
-        } catch (error) {
-          console.warn(`${logPrefix} entries.list(${book.id}) failed:`, error);
-        }
-      }
-      contentIndex = index;
-      contentIndexAt = Date.now();
-      return index;
+      return asRows(await worldBooksApi.list({}));
     } catch (error) {
       console.warn(`${logPrefix} worldBooks.list failed:`, error);
-      return null;
+      return [];
     }
+  };
+
+  const listBookEntries = async (bookId: string): Promise<unknown[]> => {
+    if (!worldBooksApi) return [];
+    try {
+      if (typeof worldBooksApi.entries === "function") {
+        return asRows(await worldBooksApi.entries(bookId));
+      }
+      const nested = worldBooksApi.entries as { list?: (id: string, options?: { limit?: number }) => Promise<unknown> } | undefined;
+      if (nested && typeof nested.list === "function") {
+        return asRows(await nested.list(bookId, { limit: CONTENT_ENTRY_LIMIT }));
+      }
+    } catch (error) {
+      console.warn(`${logPrefix} worldBooks.entries(${bookId}) failed:`, error);
+    }
+    return [];
+  };
+
+  const contentApiAvailable = (): boolean => {
+    if (!worldBooksApi) return false;
+    if (typeof worldBooksApi.entries === "function") return true;
+    const nested = worldBooksApi.entries as { list?: unknown } | undefined;
+    return nested !== undefined && nested !== null && typeof nested.list === "function";
+  };
+
+  /** Find a content row by entry id (matches the host db id or the legacy uid). */
+  const matchEntryRow = (rows: readonly unknown[], entryId: string): ContentRecord | null => {
+    for (const row of rows) {
+      const record = asRecord(row);
+      if (!record) continue;
+      if (record.id === entryId || record.uid === entryId) {
+        return { content: typeof record.content === "string" ? record.content : "" };
+      }
+    }
+    return null;
+  };
+
+  let contentIndex: Map<string, ContentRecord> | null = null;
+  let contentIndexAt = 0;
+
+  const cachedIndex = (): Map<string, ContentRecord> | null =>
+    contentIndex && Date.now() - contentIndexAt < CONTENT_INDEX_TTL_MS ? contentIndex : null;
+
+  const buildContentIndex = async (): Promise<Map<string, ContentRecord>> => {
+    const index = new Map<string, ContentRecord>();
+    const books = await listAllBooks();
+    let processedBooks = 0;
+    for (const book of books) {
+      if (processedBooks >= CONTENT_BOOK_LIMIT) break;
+      const bookId = fieldString(asRecord(book)?.id);
+      if (!bookId) continue;
+      processedBooks += 1;
+      const rows = await listBookEntries(bookId);
+      let counted = 0;
+      for (const row of rows) {
+        if (counted >= CONTENT_ENTRY_LIMIT) break;
+        const record = asRecord(row);
+        if (!record) continue;
+        const stored: ContentRecord = {
+          content: typeof record.content === "string" ? record.content : "",
+        };
+        const id = fieldString(record.id);
+        if (id) {
+          if (!index.has(id)) counted += 1;
+          index.set(id, stored);
+        }
+        const uid = fieldString(record.uid);
+        if (uid && uid !== id) index.set(uid, stored);
+      }
+    }
+    contentIndex = index;
+    contentIndexAt = Date.now();
+    return index;
   };
 
   const lookupEntryContent = async (entry: ActivationEntry): Promise<EntryContentResult> => {
     if (isHiddenBook(entry.book, parseHiddenPatterns(settings.hidden), role)) {
       return { state: "hidden" };
     }
-    const api = ctx.worldBooks;
-    if (!api || typeof api.entries?.list !== "function") return { state: "unavailable" };
+    if (!contentApiAvailable()) return { state: "unavailable" };
 
     // Fast path: the activation event tells us which book the entry lives in.
     if (entry.bookId) {
-      try {
-        const { data } = await api.entries.list(entry.bookId, { limit: CONTENT_ENTRY_LIMIT });
-        const hit = data.find((candidate) => candidate.id === entry.id || candidate.uid === entry.id);
-        if (hit) return { state: "ready", content: hit.content };
-      } catch (error) {
-        console.warn(`${logPrefix} entries.list(${entry.bookId}) failed:`, error);
-      }
+      const hit = matchEntryRow(await listBookEntries(entry.bookId), entry.id);
+      if (hit) return { state: "ready", content: hit.content };
     }
     // Slow path: scan every book through a short-lived cached index —
     // covers hosts that omit bookId on the activation payload.
     const index = cachedIndex() ?? (await buildContentIndex());
-    const record = index?.get(entry.id);
+    const record = index.get(entry.id);
     if (record) return { state: "ready", content: record.content };
     // One forced refresh before giving up (the book may have just been added).
     const refreshed = await buildContentIndex();
-    const retry = refreshed?.get(entry.id);
+    const retry = refreshed.get(entry.id);
     return retry ? { state: "ready", content: retry.content } : { state: "missing" };
   };
 
